@@ -491,8 +491,8 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
 
       logger.log(`[CW] Providers authed: trakt=${isTraktAuthed} simkl=${isSimklAuthed}`);
 
-      // Declare groupPromises outside the if block
       let groupPromises: Promise<void>[] = [];
+      const allLocalItems: ContinueWatchingItem[] = [];
 
       // In Trakt mode, CW is sourced from Trakt only, but we still want to overlay local progress
       // when local is ahead (scrobble lag/offline playback).
@@ -644,7 +644,6 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
           }
         })();
 
-        // Process each content group concurrently, merging results as they arrive
         groupPromises = Object.values(contentGroups).map(async (group) => {
           try {
             if (!isSupportedId(group.id)) return;
@@ -801,7 +800,7 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
               } as ContinueWatchingItem);
             }
 
-            if (batch.length > 0) await mergeBatchIntoState(batch);
+            if (batch.length > 0) allLocalItems.push(...batch);
           } catch (error) {
             // Continue processing other groups even if one fails
           }
@@ -1196,7 +1195,7 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
               // Always preferring local was wrong: if you watched on another device,
               // Trakt's paused_at is newer and should win for ordering purposes.
               const mergedLastUpdated = Math.max(
-                (mostRecentLocal.lastUpdated ?? 0), 
+                (mostRecentLocal.lastUpdated ?? 0),
                 (it.lastUpdated ?? 0)
               );
 
@@ -1573,6 +1572,37 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
 
       // Wait for all groups and provider merges to settle, then finalize loading state
       await Promise.allSettled([...groupPromises, traktMergePromise, simklMergePromise]);
+
+      if (allLocalItems.length > 0) {
+        const map = new Map<string, ContinueWatchingItem>();
+        for (const it of allLocalItems) {
+          const key = `${it.type}:${it.id}`;
+          const existing = map.get(key);
+          if (!existing || shouldPreferCandidate(it, existing)) {
+            map.set(key, it);
+          }
+        }
+
+        const sorted = Array.from(map.values());
+        sorted.sort(compareCwItems);
+
+        // Filter removed items
+        const filtered: ContinueWatchingItem[] = [];
+        for (const it of sorted) {
+          const key = it.type === 'series' && it.season && it.episode
+            ? `${it.type}:${it.id}:${it.season}:${it.episode}`
+            : `${it.type}:${it.id}`;
+          if (recentlyRemovedRef.current.has(key)) continue;
+
+          const removeId = it.type === 'series' && it.season && it.episode
+            ? `${it.id}:${it.season}:${it.episode}`
+            : it.id;
+          const isRemoved = await storageService.isContinueWatchingRemoved(removeId, it.type);
+          if (!isRemoved) filtered.push(it);
+        }
+
+        setContinueWatchingItems(filtered);
+      }
     } catch (error) {
       // Continue even if loading fails
     } finally {
@@ -1943,271 +1973,271 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
   // Memoized render function for poster-style continue watching items
   const renderPosterStyleItem = useCallback(({ item }: { item: ContinueWatchingItem }) => {
     return (
-    <TouchableOpacity
-      style={[
-        styles.posterContentItem,
-        {
-          width: computedPosterWidth,
-        }
-      ]}
-      activeOpacity={0.8}
-      onPress={() => handleContentPress(item)}
-      onLongPress={() => handleLongPress(item)}
-      delayLongPress={800}
-    >
-      {/* Poster Image */}
-      <View style={[
-        styles.posterImageContainer,
-        {
-          height: computedPosterHeight,
-          borderRadius: settings.posterBorderRadius ?? 12,
-        }
-      ]}>
-        <FastImage
-          source={{
-            uri: item.poster || 'https://via.placeholder.com/300x450',
-            priority: FastImage.priority.high,
-            cache: FastImage.cacheControl.immutable
-          }}
-          style={[styles.posterImage, { borderRadius: settings.posterBorderRadius ?? 12 }]}
-          resizeMode={FastImage.resizeMode.cover}
-        />
+      <TouchableOpacity
+        style={[
+          styles.posterContentItem,
+          {
+            width: computedPosterWidth,
+          }
+        ]}
+        activeOpacity={0.8}
+        onPress={() => handleContentPress(item)}
+        onLongPress={() => handleLongPress(item)}
+        delayLongPress={800}
+      >
+        {/* Poster Image */}
+        <View style={[
+          styles.posterImageContainer,
+          {
+            height: computedPosterHeight,
+            borderRadius: settings.posterBorderRadius ?? 12,
+          }
+        ]}>
+          <FastImage
+            source={{
+              uri: item.poster || 'https://via.placeholder.com/300x450',
+              priority: FastImage.priority.high,
+              cache: FastImage.cacheControl.immutable
+            }}
+            style={[styles.posterImage, { borderRadius: settings.posterBorderRadius ?? 12 }]}
+            resizeMode={FastImage.resizeMode.cover}
+          />
 
-        {/* Gradient overlay */}
-        <LinearGradient
-          colors={['transparent', 'rgba(0,0,0,0.8)']}
-          style={[styles.posterGradient, { borderRadius: settings.posterBorderRadius ?? 12 }]}
-        />
+          {/* Gradient overlay */}
+          <LinearGradient
+            colors={['transparent', 'rgba(0,0,0,0.8)']}
+            style={[styles.posterGradient, { borderRadius: settings.posterBorderRadius ?? 12 }]}
+          />
 
-        {/* Episode Info Overlay */}
-        {item.type === 'series' && item.season && item.episode && (
-          <View style={styles.posterEpisodeOverlay}>
-            <Text style={[styles.posterEpisodeText, { fontSize: isTV ? 14 : isLargeTablet ? 13 : 12 }]}>
-              S{item.season} E{item.episode}
-            </Text>
-          </View>
-        )}
-
-        {/* Up Next Badge */}
-        {item.type === 'series' && item.progress === 0 && (
-          <View style={[styles.posterUpNextBadge, { backgroundColor: currentTheme.colors.primary }]}>
-            <Text style={[styles.posterUpNextText, { fontSize: isTV ? 12 : 10 }]}>{t('home.up_next_caps')}</Text>
-          </View>
-        )}
-
-        {/* Progress Bar */}
-        {item.progress > 0 && (
-          <View style={styles.posterProgressContainer}>
-            <View style={[styles.posterProgressTrack, { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
-              <View
-                style={[
-                  styles.posterProgressBar,
-                  {
-                    width: `${item.progress}%`,
-                    backgroundColor: currentTheme.colors.primary
-                  }
-                ]}
-              />
+          {/* Episode Info Overlay */}
+          {item.type === 'series' && item.season && item.episode && (
+            <View style={styles.posterEpisodeOverlay}>
+              <Text style={[styles.posterEpisodeText, { fontSize: isTV ? 14 : isLargeTablet ? 13 : 12 }]}>
+                S{item.season} E{item.episode}
+              </Text>
             </View>
-          </View>
-        )}
+          )}
 
-        {/* Delete Indicator Overlay */}
-        {deletingItemId === item.id && (
-          <View style={[styles.deletingOverlay, { borderRadius: settings.posterBorderRadius ?? 12 }]}>
-            <ActivityIndicator size="large" color="#FFFFFF" />
-          </View>
-        )}
-      </View>
+          {/* Up Next Badge */}
+          {item.type === 'series' && item.progress === 0 && (
+            <View style={[styles.posterUpNextBadge, { backgroundColor: currentTheme.colors.primary }]}>
+              <Text style={[styles.posterUpNextText, { fontSize: isTV ? 12 : 10 }]}>{t('home.up_next_caps')}</Text>
+            </View>
+          )}
 
-      {/* Title below poster */}
-      <View style={styles.posterTitleContainer}>
-        <Text
-          style={[
-            styles.posterTitle,
-            {
-              color: currentTheme.colors.highEmphasis,
-              fontSize: isTV ? 16 : isLargeTablet ? 15 : 14
-            }
-          ]}
-          numberOfLines={2}
-        >
-          {item.name}
-        </Text>
-        {item.progress > 0 && (
-          <Text style={[styles.posterProgressLabel, { color: currentTheme.colors.textMuted, fontSize: isTV ? 13 : 11 }]}>
-            {Math.round(item.progress)}%
+          {/* Progress Bar */}
+          {item.progress > 0 && (
+            <View style={styles.posterProgressContainer}>
+              <View style={[styles.posterProgressTrack, { backgroundColor: 'rgba(255,255,255,0.3)' }]}>
+                <View
+                  style={[
+                    styles.posterProgressBar,
+                    {
+                      width: `${item.progress}%`,
+                      backgroundColor: currentTheme.colors.primary
+                    }
+                  ]}
+                />
+              </View>
+            </View>
+          )}
+
+          {/* Delete Indicator Overlay */}
+          {deletingItemId === item.id && (
+            <View style={[styles.deletingOverlay, { borderRadius: settings.posterBorderRadius ?? 12 }]}>
+              <ActivityIndicator size="large" color="#FFFFFF" />
+            </View>
+          )}
+        </View>
+
+        {/* Title below poster */}
+        <View style={styles.posterTitleContainer}>
+          <Text
+            style={[
+              styles.posterTitle,
+              {
+                color: currentTheme.colors.highEmphasis,
+                fontSize: isTV ? 16 : isLargeTablet ? 15 : 14
+              }
+            ]}
+            numberOfLines={2}
+          >
+            {item.name}
           </Text>
-        )}
-      </View>
-    </TouchableOpacity>
+          {item.progress > 0 && (
+            <Text style={[styles.posterProgressLabel, { color: currentTheme.colors.textMuted, fontSize: isTV ? 13 : 11 }]}>
+              {Math.round(item.progress)}%
+            </Text>
+          )}
+        </View>
+      </TouchableOpacity>
     );
   }, [currentTheme.colors, handleContentPress, handleLongPress, deletingItemId, computedPosterWidth, computedPosterHeight, isTV, isLargeTablet, settings.posterBorderRadius]);
 
   // Memoized render function for wide-style continue watching items
   const renderWideStyleItem = useCallback(({ item }: { item: ContinueWatchingItem }) => {
     return (
-    <TouchableOpacity
-      style={[
-        styles.wideContentItem,
-        {
-          backgroundColor: currentTheme.colors.elevation1,
-          borderColor: currentTheme.colors.border,
-          shadowColor: currentTheme.colors.black,
-          width: computedItemWidth,
-          height: computedItemHeight,
-          borderRadius: settings.posterBorderRadius ?? 12,
-        }
-      ]}
-      activeOpacity={0.8}
-      onPress={() => handleContentPress(item)}
-      onLongPress={() => handleLongPress(item)}
-      delayLongPress={800}
-    >
-      {/* Poster Image */}
-      <View style={[
-        styles.posterContainer,
-        {
-          width: isTV ? 100 : isLargeTablet ? 90 : isTablet ? 85 : 80
-        }
-      ]}>
-        <FastImage
-          source={{
-            uri: item.poster || 'https://via.placeholder.com/300x450',
-            priority: FastImage.priority.high,
-            cache: FastImage.cacheControl.immutable
-          }}
-          style={[styles.continueWatchingPoster, { borderTopLeftRadius: settings.posterBorderRadius ?? 12, borderBottomLeftRadius: settings.posterBorderRadius ?? 12 }]}
-          resizeMode={FastImage.resizeMode.cover}
-        />
+      <TouchableOpacity
+        style={[
+          styles.wideContentItem,
+          {
+            backgroundColor: currentTheme.colors.elevation1,
+            borderColor: currentTheme.colors.border,
+            shadowColor: currentTheme.colors.black,
+            width: computedItemWidth,
+            height: computedItemHeight,
+            borderRadius: settings.posterBorderRadius ?? 12,
+          }
+        ]}
+        activeOpacity={0.8}
+        onPress={() => handleContentPress(item)}
+        onLongPress={() => handleLongPress(item)}
+        delayLongPress={800}
+      >
+        {/* Poster Image */}
+        <View style={[
+          styles.posterContainer,
+          {
+            width: isTV ? 100 : isLargeTablet ? 90 : isTablet ? 85 : 80
+          }
+        ]}>
+          <FastImage
+            source={{
+              uri: item.poster || 'https://via.placeholder.com/300x450',
+              priority: FastImage.priority.high,
+              cache: FastImage.cacheControl.immutable
+            }}
+            style={[styles.continueWatchingPoster, { borderTopLeftRadius: settings.posterBorderRadius ?? 12, borderBottomLeftRadius: settings.posterBorderRadius ?? 12 }]}
+            resizeMode={FastImage.resizeMode.cover}
+          />
 
-        {/* Delete Indicator Overlay */}
-        {deletingItemId === item.id && (
-          <View style={styles.deletingOverlay}>
-            <ActivityIndicator size="large" color="#FFFFFF" />
-          </View>
-        )}
-      </View>
-
-      {/* Content Details */}
-      <View style={[
-        styles.contentDetails,
-        {
-          padding: isTV ? 16 : isLargeTablet ? 14 : isTablet ? 12 : 12
-        }
-      ]}>
-        {(() => {
-          const isUpNext = item.type === 'series' && item.progress === 0;
-          return (
-            <View style={styles.titleRow}>
-              <Text
-                style={[
-                  styles.contentTitle,
-                  {
-                    color: currentTheme.colors.highEmphasis,
-                    fontSize: isTV ? 20 : isLargeTablet ? 18 : isTablet ? 17 : 16
-                  }
-                ]}
-                numberOfLines={1}
-              >
-                {item.name}
-              </Text>
-              {isUpNext && (
-                <View style={[
-                  styles.progressBadge,
-                  {
-                    backgroundColor: currentTheme.colors.primary,
-                    paddingHorizontal: isTV ? 12 : isLargeTablet ? 10 : isTablet ? 8 : 8,
-                    paddingVertical: isTV ? 6 : isLargeTablet ? 5 : isTablet ? 4 : 3
-                  }
-                ]}>
-                  <Text style={[
-                    styles.progressText,
-                    { fontSize: isTV ? 14 : isLargeTablet ? 13 : isTablet ? 12 : 12 }
-                  ]}>{t('home.up_next')}</Text>
-                </View>
-              )}
+          {/* Delete Indicator Overlay */}
+          {deletingItemId === item.id && (
+            <View style={styles.deletingOverlay}>
+              <ActivityIndicator size="large" color="#FFFFFF" />
             </View>
-          );
-        })()}
+          )}
+        </View>
 
-        {/* Episode Info or Year */}
-        {(() => {
-          if (item.type === 'series' && item.season && item.episode) {
+        {/* Content Details */}
+        <View style={[
+          styles.contentDetails,
+          {
+            padding: isTV ? 16 : isLargeTablet ? 14 : isTablet ? 12 : 12
+          }
+        ]}>
+          {(() => {
+            const isUpNext = item.type === 'series' && item.progress === 0;
             return (
-              <View style={styles.episodeRow}>
+              <View style={styles.titleRow}>
+                <Text
+                  style={[
+                    styles.contentTitle,
+                    {
+                      color: currentTheme.colors.highEmphasis,
+                      fontSize: isTV ? 20 : isLargeTablet ? 18 : isTablet ? 17 : 16
+                    }
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.name}
+                </Text>
+                {isUpNext && (
+                  <View style={[
+                    styles.progressBadge,
+                    {
+                      backgroundColor: currentTheme.colors.primary,
+                      paddingHorizontal: isTV ? 12 : isLargeTablet ? 10 : isTablet ? 8 : 8,
+                      paddingVertical: isTV ? 6 : isLargeTablet ? 5 : isTablet ? 4 : 3
+                    }
+                  ]}>
+                    <Text style={[
+                      styles.progressText,
+                      { fontSize: isTV ? 14 : isLargeTablet ? 13 : isTablet ? 12 : 12 }
+                    ]}>{t('home.up_next')}</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })()}
+
+          {/* Episode Info or Year */}
+          {(() => {
+            if (item.type === 'series' && item.season && item.episode) {
+              return (
+                <View style={styles.episodeRow}>
+                  <Text style={[
+                    styles.episodeText,
+                    {
+                      color: currentTheme.colors.mediumEmphasis,
+                      fontSize: isTV ? 16 : isLargeTablet ? 15 : isTablet ? 14 : 13
+                    }
+                  ]}>
+                    {t('home.season', { season: item.season })}
+                  </Text>
+                  {item.episodeTitle && (
+                    <Text
+                      style={[
+                        styles.episodeTitle,
+                        {
+                          color: currentTheme.colors.mediumEmphasis,
+                          fontSize: isTV ? 15 : isLargeTablet ? 14 : isTablet ? 13 : 12
+                        }
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {item.episodeTitle}
+                    </Text>
+                  )}
+                </View>
+              );
+            } else {
+              return (
                 <Text style={[
-                  styles.episodeText,
+                  styles.yearText,
                   {
                     color: currentTheme.colors.mediumEmphasis,
                     fontSize: isTV ? 16 : isLargeTablet ? 15 : isTablet ? 14 : 13
                   }
                 ]}>
-                  {t('home.season', { season: item.season })}
+                  {item.year} • {item.type === 'movie' ? t('home.movie') : t('home.series')}
                 </Text>
-                {item.episodeTitle && (
-                  <Text
-                    style={[
-                      styles.episodeTitle,
-                      {
-                        color: currentTheme.colors.mediumEmphasis,
-                        fontSize: isTV ? 15 : isLargeTablet ? 14 : isTablet ? 13 : 12
-                      }
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {item.episodeTitle}
-                  </Text>
-                )}
-              </View>
-            );
-          } else {
-            return (
-              <Text style={[
-                styles.yearText,
+              );
+            }
+          })()}
+
+          {/* Progress Bar */}
+          {item.progress > 0 && (
+            <View style={styles.wideProgressContainer}>
+              <View style={[
+                styles.wideProgressTrack,
                 {
-                  color: currentTheme.colors.mediumEmphasis,
-                  fontSize: isTV ? 16 : isLargeTablet ? 15 : isTablet ? 14 : 13
+                  height: isTV ? 6 : isLargeTablet ? 5 : isTablet ? 4 : 4
                 }
               ]}>
-                {item.year} • {item.type === 'movie' ? t('home.movie') : t('home.series')}
+                <View
+                  style={[
+                    styles.wideProgressBar,
+                    {
+                      width: `${item.progress}%`,
+                      backgroundColor: currentTheme.colors.primary
+                    }
+                  ]}
+                />
+              </View>
+              <Text style={[
+                styles.progressLabel,
+                {
+                  color: currentTheme.colors.textMuted,
+                  fontSize: isTV ? 14 : isLargeTablet ? 13 : isTablet ? 12 : 11
+                }
+              ]}>
+                {t('home.percent_watched', { percent: Math.round(item.progress) })}
               </Text>
-            );
-          }
-        })()}
-
-        {/* Progress Bar */}
-        {item.progress > 0 && (
-          <View style={styles.wideProgressContainer}>
-            <View style={[
-              styles.wideProgressTrack,
-              {
-                height: isTV ? 6 : isLargeTablet ? 5 : isTablet ? 4 : 4
-              }
-            ]}>
-              <View
-                style={[
-                  styles.wideProgressBar,
-                  {
-                    width: `${item.progress}%`,
-                    backgroundColor: currentTheme.colors.primary
-                  }
-                ]}
-              />
             </View>
-            <Text style={[
-              styles.progressLabel,
-              {
-                color: currentTheme.colors.textMuted,
-                fontSize: isTV ? 14 : isLargeTablet ? 13 : isTablet ? 12 : 11
-              }
-            ]}>
-              {t('home.percent_watched', { percent: Math.round(item.progress) })}
-            </Text>
-          </View>
-        )}
-      </View>
-    </TouchableOpacity>
+          )}
+        </View>
+      </TouchableOpacity>
     );
   }, [currentTheme.colors, handleContentPress, handleLongPress, deletingItemId, computedItemWidth, computedItemHeight, isTV, isLargeTablet, isTablet, settings.posterBorderRadius, t]);
 
