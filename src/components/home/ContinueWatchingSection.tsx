@@ -33,6 +33,7 @@ import { stremioService } from '../../services/stremioService';
 import { streamCacheService } from '../../services/streamCacheService';
 import { useSettings } from '../../hooks/useSettings';
 import { useBottomSheetBackHandler } from '../../hooks/useBottomSheetBackHandler';
+import { watchedService } from '../../services/watchedService';
 
 
 // Define interface for continue watching items
@@ -293,8 +294,10 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
     currentEpisode: number,
     videos: any[],
     watchedSet?: Set<string>,
-    showId?: string
-  ) => {
+    showId?: string,
+    localWatchedMap?: Map<string, number>,
+    baseTimestamp: number = 0
+  ): { video: any; lastWatched: number } | null => {
     if (!videos || !Array.isArray(videos)) return null;
 
     const sortedVideos = [...videos].sort((a, b) => {
@@ -302,11 +305,27 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
       return a.episode - b.episode;
     });
 
-    const isAlreadyWatched = (season: number, episode: number): boolean => {
-      if (!watchedSet || !showId) return false;
+    let latestWatchedTimestamp = baseTimestamp;
+
+    if (localWatchedMap && showId) {
       const cleanShowId = showId.startsWith('tt') ? showId : `tt${showId}`;
-      return watchedSet.has(`${cleanShowId}:${season}:${episode}`) ||
-        watchedSet.has(`${showId}:${season}:${episode}`);
+      for (const video of sortedVideos) {
+        const sig1 = `${cleanShowId}:${video.season}:${video.episode}`;
+        const sig2 = `${showId}:${video.season}:${video.episode}`;
+        const t1 = localWatchedMap.get(sig1) || 0;
+        const t2 = localWatchedMap.get(sig2) || 0;
+        latestWatchedTimestamp = Math.max(latestWatchedTimestamp, t1, t2);
+      }
+    }
+
+    const isAlreadyWatched = (season: number, episode: number): boolean => {
+      if (!showId) return false;
+      const cleanShowId = showId.startsWith('tt') ? showId : `tt${showId}`;
+      const sig1 = `${cleanShowId}:${season}:${episode}`;
+      const sig2 = `${showId}:${season}:${episode}`;
+      if (watchedSet && (watchedSet.has(sig1) || watchedSet.has(sig2))) return true;
+      if (localWatchedMap && (localWatchedMap.has(sig1) || localWatchedMap.has(sig2))) return true;
+      return false;
     };
 
     for (const video of sortedVideos) {
@@ -316,7 +335,7 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
       if (isAlreadyWatched(video.season, video.episode)) continue;
 
       if (isEpisodeReleased(video)) {
-        return video;
+        return { video, lastWatched: latestWatchedTimestamp };
       }
     }
 
@@ -494,6 +513,101 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
       let groupPromises: Promise<void>[] = [];
       const allLocalItems: ContinueWatchingItem[] = [];
 
+      // Fetch Trakt watched movies once and reuse
+      const traktMoviesSetPromise = (async () => {
+        try {
+          if (!isTraktAuthed) return new Set<string>();
+          if (typeof (traktService as any).getWatchedMovies === 'function') {
+            const watched = await (traktService as any).getWatchedMovies();
+            const watchedSet = new Set<string>();
+
+            if (Array.isArray(watched)) {
+              watched.forEach((movie: any) => {
+                const ids = movie?.movie?.ids;
+                if (!ids) return;
+
+                const imdb = ids.imdb;
+                if (imdb) {
+                  watchedSet.add(imdb.startsWith('tt') ? imdb : `tt${imdb}`);
+                }
+                if (ids.tmdb) {
+                  watchedSet.add(ids.tmdb.toString());
+                }
+              });
+            }
+            return watchedSet;
+          }
+          return new Set<string>();
+        } catch {
+          return new Set<string>();
+        }
+      })();
+
+      // Fetch Trakt watched shows once and reuse
+      const traktShowsSetPromise = (async () => {
+        try {
+          if (!isTraktAuthed) return new Set<string>();
+
+          if (typeof (traktService as any).getWatchedShows === 'function') {
+            const watched = await (traktService as any).getWatchedShows();
+            const watchedSet = new Set<string>();
+
+            if (Array.isArray(watched)) {
+              watched.forEach((show: any) => {
+                const ids = show?.show?.ids;
+                if (!ids) return;
+
+                const imdbId = ids.imdb;
+                const tmdbId = ids.tmdb;
+
+                if (show.seasons && Array.isArray(show.seasons)) {
+                  show.seasons.forEach((season: any) => {
+                    if (season.episodes && Array.isArray(season.episodes)) {
+                      season.episodes.forEach((episode: any) => {
+                        if (imdbId) {
+                          const cleanImdbId = imdbId.startsWith('tt') ? imdbId : `tt${imdbId}`;
+                          watchedSet.add(`${cleanImdbId}:${season.number}:${episode.number}`);
+                        }
+                        if (tmdbId) {
+                          watchedSet.add(`${tmdbId}:${season.number}:${episode.number}`);
+                        }
+                      });
+                    }
+                  });
+                }
+              });
+            }
+            return watchedSet;
+          }
+          return new Set<string>();
+        } catch {
+          return new Set<string>();
+        }
+      })();
+
+      // Fetch local supervised watched items
+      const localWatchedShowsMapPromise = (async () => {
+        try {
+          const watched = await watchedService.getAllWatchedItems();
+          const watchedMap = new Map<string, number>();
+          watched.forEach(item => {
+            if (item.content_id) {
+              const cleanId = item.content_id.startsWith('tt') ? item.content_id : `tt${item.content_id}`;
+              if (item.season != null && item.episode != null) {
+                watchedMap.set(`${cleanId}:${item.season}:${item.episode}`, item.watched_at);
+                watchedMap.set(`${item.content_id}:${item.season}:${item.episode}`, item.watched_at);
+              } else {
+                watchedMap.set(cleanId, item.watched_at);
+                watchedMap.set(item.content_id, item.watched_at);
+              }
+            }
+          });
+          return watchedMap;
+        } catch {
+          return new Map<string, number>();
+        }
+      })();
+
       // In Trakt mode, CW is sourced from Trakt only, but we still want to overlay local progress
       // when local is ahead (scrobble lag/offline playback).
       let localProgressIndex: Map<string, LocalProgressEntry[]> | null = null;
@@ -572,77 +686,7 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
           contentGroups[contentKey].episodes.push({ key, episodeId, progress, progressPercent });
         }
 
-        // Fetch Trakt watched movies once and reuse
-        const traktMoviesSetPromise = (async () => {
-          try {
-            if (!isTraktAuthed) return new Set<string>();
-            if (typeof (traktService as any).getWatchedMovies === 'function') {
-              const watched = await (traktService as any).getWatchedMovies();
-              const watchedSet = new Set<string>();
-
-              if (Array.isArray(watched)) {
-                watched.forEach((w: any) => {
-                  const ids = w?.movie?.ids;
-                  if (!ids) return;
-
-                  if (ids.imdb) {
-                    const imdb = ids.imdb;
-                    watchedSet.add(imdb.startsWith('tt') ? imdb : `tt${imdb}`);
-                  }
-                  if (ids.tmdb) {
-                    watchedSet.add(ids.tmdb.toString());
-                  }
-                });
-              }
-              return watchedSet;
-            }
-            return new Set<string>();
-          } catch {
-            return new Set<string>();
-          }
-        })();
-
-        // Fetch Trakt watched shows once and reuse
-        const traktShowsSetPromise = (async () => {
-          try {
-            if (!isTraktAuthed) return new Set<string>();
-
-            if (typeof (traktService as any).getWatchedShows === 'function') {
-              const watched = await (traktService as any).getWatchedShows();
-              const watchedSet = new Set<string>();
-
-              if (Array.isArray(watched)) {
-                watched.forEach((show: any) => {
-                  const ids = show?.show?.ids;
-                  if (!ids) return;
-
-                  const imdbId = ids.imdb;
-                  const tmdbId = ids.tmdb;
-
-                  if (show.seasons && Array.isArray(show.seasons)) {
-                    show.seasons.forEach((season: any) => {
-                      if (season.episodes && Array.isArray(season.episodes)) {
-                        season.episodes.forEach((episode: any) => {
-                          if (imdbId) {
-                            const cleanImdbId = imdbId.startsWith('tt') ? imdbId : `tt${imdbId}`;
-                            watchedSet.add(`${cleanImdbId}:${season.number}:${episode.number}`);
-                          }
-                          if (tmdbId) {
-                            watchedSet.add(`${tmdbId}:${season.number}:${episode.number}`);
-                          }
-                        });
-                      }
-                    });
-                  }
-                });
-              }
-              return watchedSet;
-            }
-            return new Set<string>();
-          } catch {
-            return new Set<string>();
-          }
-        })();
+        // (Promises are now declared at the top of the function)
 
         groupPromises = Object.values(contentGroups).map(async (group) => {
           try {
@@ -703,20 +747,24 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
                 // If we have valid season/episode info, find the next episode
                 if (completedSeason !== undefined && completedEpisode !== undefined && metadata?.videos) {
                   const watchedEpisodesSet = await traktShowsSetPromise;
-                  const nextEpisode = findNextEpisode(
+                  const localWatchedMap = await localWatchedShowsMapPromise;
+                  const nextEpisodeResult = findNextEpisode(
                     completedSeason,
                     completedEpisode,
                     metadata.videos,
                     watchedEpisodesSet,
-                    group.id
+                    group.id,
+                    localWatchedMap,
+                    progress.lastUpdated
                   );
 
-                  if (nextEpisode) {
+                  if (nextEpisodeResult) {
+                    const nextEpisode = nextEpisodeResult.video;
                     logger.log(`📺 [ContinueWatching] Found next episode: S${nextEpisode.season}E${nextEpisode.episode} for ${basicContent.name}`);
                     batch.push({
                       ...basicContent,
                       progress: 0, // Up next - no progress yet
-                      lastUpdated: progress.lastUpdated, // Keep the timestamp from completed episode
+                      lastUpdated: nextEpisodeResult.lastWatched, // Keep the timestamp from completed episode or watched item
                       season: nextEpisode.season,
                       episode: nextEpisode.episode,
                       episodeTitle: nextEpisode.title || `Episode ${nextEpisode.episode}`,
@@ -756,13 +804,20 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
                 // Check if this specific episode is watched on Trakt
                 if (season !== undefined && episodeNumber !== undefined) {
                   const watchedEpisodesSet = await traktShowsSetPromise;
-                  // Try with both raw ID and tt-prefixed ID, and TMDB ID (which is just the ID string)
+                  const localWatchedMap = await localWatchedShowsMapPromise;
                   const rawId = group.id.replace(/^tt/, '');
                   const ttId = `tt${rawId}`;
 
-                  if (watchedEpisodesSet.has(`${ttId}:${season}:${episodeNumber}`) ||
-                    watchedEpisodesSet.has(`${rawId}:${season}:${episodeNumber}`) ||
-                    watchedEpisodesSet.has(`${group.id}:${season}:${episodeNumber}`)) {
+                  const sig1 = `${ttId}:${season}:${episodeNumber}`;
+                  const sig2 = `${rawId}:${season}:${episodeNumber}`;
+                  const sig3 = `${group.id}:${season}:${episodeNumber}`;
+
+                  if (watchedEpisodesSet.has(sig1) ||
+                    watchedEpisodesSet.has(sig2) ||
+                    watchedEpisodesSet.has(sig3) ||
+                    localWatchedMap.has(sig1) ||
+                    localWatchedMap.has(sig2) ||
+                    localWatchedMap.has(sig3)) {
                     isWatchedOnTrakt = true;
 
                     // Update local storage to reflect watched status
@@ -942,22 +997,26 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
                   if (metadata?.videos) {
                     // Use pre-fetched watched set so already-watched episodes are skipped
                     const watchedSetForShow = watchedEpisodeSetByShow.get(showImdb);
-                    const nextEpisode = findNextEpisode(
+                    const localWatchedMap = await localWatchedShowsMapPromise;
+                    const nextEpisodeResult = findNextEpisode(
                       item.episode.season,
                       item.episode.number,
                       metadata.videos,
                       watchedSetForShow,
-                      showImdb
+                      showImdb,
+                      localWatchedMap,
+                      pausedAt
                     );
 
-                    if (nextEpisode) {
+                    if (nextEpisodeResult) {
+                      const nextEpisode = nextEpisodeResult.video;
                       logger.log(`📺 [TraktPlayback] Episode completed, adding next: S${nextEpisode.season}E${nextEpisode.episode} for ${item.show.title}`);
                       traktBatch.push({
                         ...cachedData.basicContent,
                         id: showImdb,
                         type: 'series',
                         progress: 0, // Up next - no progress yet
-                        lastUpdated: pausedAt,
+                        lastUpdated: nextEpisodeResult.lastWatched,
                         season: nextEpisode.season,
                         episode: nextEpisode.episode,
                         episodeTitle: nextEpisode.title || `Episode ${nextEpisode.episode}`,
@@ -1041,24 +1100,28 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
 
                 // Use pre-built watched episode set (already respects reset_at)
                 const watchedEpisodeSet = watchedEpisodeSetByShow.get(showImdb) ?? new Set<string>();
+                const localWatchedMap = await localWatchedShowsMapPromise;
 
                 // Find the next unwatched episode
-                const nextEpisode = findNextEpisode(
+                const nextEpisodeResult = findNextEpisode(
                   lastWatchedSeason,
                   lastWatchedEpisode,
                   cachedData.metadata.videos,
                   watchedEpisodeSet,
-                  showImdb
+                  showImdb,
+                  localWatchedMap,
+                  latestEpisodeTimestamp
                 );
 
-                if (nextEpisode) {
+                if (nextEpisodeResult) {
+                  const nextEpisode = nextEpisodeResult.video;
                   logger.log(`📺 [TraktWatched] Found Up Next: ${watchedShow.show.title} S${nextEpisode.season}E${nextEpisode.episode}`);
                   traktBatch.push({
                     ...cachedData.basicContent,
                     id: showImdb,
                     type: 'series',
                     progress: 0, // Up next - no progress yet
-                    lastUpdated: latestEpisodeTimestamp,
+                    lastUpdated: nextEpisodeResult.lastWatched,
                     season: nextEpisode.season,
                     episode: nextEpisode.episode,
                     episodeTitle: nextEpisode.title || `Episode ${nextEpisode.episode}`,
@@ -1431,21 +1494,26 @@ const ContinueWatchingSection = React.forwardRef<ContinueWatchingRef>((props, re
                 if (item.progress >= 85) {
                   const metadata = cachedData.metadata;
                   if (metadata?.videos) {
-                    const nextEpisode = findNextEpisode(
+                    const watchedEpisodesSet = await traktShowsSetPromise;
+                    const localWatchedMap = await localWatchedShowsMapPromise;
+                    const nextEpisodeResult = findNextEpisode(
                       item.episode.season,
                       episodeNum,
                       metadata.videos,
-                      undefined,
-                      showImdb
+                      watchedEpisodesSet,
+                      showImdb,
+                      localWatchedMap,
+                      pausedAt
                     );
 
-                    if (nextEpisode) {
+                    if (nextEpisodeResult) {
+                      const nextEpisode = nextEpisodeResult.video;
                       simklBatch.push({
                         ...cachedData.basicContent,
                         id: showImdb,
                         type: 'series',
                         progress: 0,
-                        lastUpdated: pausedAt,
+                        lastUpdated: nextEpisodeResult.lastWatched,
                         season: nextEpisode.season,
                         episode: nextEpisode.episode,
                         episodeTitle: nextEpisode.title || `Episode ${nextEpisode.episode}`,
