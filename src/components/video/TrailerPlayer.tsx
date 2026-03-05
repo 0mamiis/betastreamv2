@@ -374,17 +374,12 @@ const TrailerPlayer = React.forwardRef<any, TrailerPlayerProps>(({
       <Video
         ref={videoRef}
         source={(() => {
-          const androidHeaders = Platform.OS === 'android' ? { 'User-Agent': 'Nuvio/1.0 (Android)' } : {} as any;
           const lower = (trailerUrl || '').toLowerCase();
           const looksLikeHls = /\.m3u8(\b|$)/.test(lower) || /hls|applehlsencryption|playlist|m3u/.test(lower);
-          // Detect both .mpd URLs and inline data: DASH manifests
-          const looksLikeDash = /\.mpd(\b|$)/.test(lower) || /dash|manifest/.test(lower) || lower.startsWith('data:application/dash');
           if (Platform.OS === 'android') {
+            const androidHeaders = { 'User-Agent': 'Nuvio/1.0 (Android)' };
             if (looksLikeHls) {
               return { uri: trailerUrl, type: 'm3u8', headers: androidHeaders } as any;
-            }
-            if (looksLikeDash) {
-              return { uri: trailerUrl, type: 'mpd', headers: androidHeaders } as any;
             }
             return { uri: trailerUrl, headers: androidHeaders } as any;
           }
