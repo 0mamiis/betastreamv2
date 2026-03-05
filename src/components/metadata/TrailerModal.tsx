@@ -270,7 +270,23 @@ const TrailerModal: React.FC<TrailerModalProps> = memo(({
               <View style={styles.playerWrapper}>
                 <Video
                   ref={videoRef}
-                  source={{ uri: trailerUrl }}
+                  source={(() => {
+                    const lower = (trailerUrl || '').toLowerCase();
+                    const looksLikeDash = /\.mpd(\b|$)/.test(lower) || /dash|manifest/.test(lower);
+                    const isYouTubeCdn = lower.includes('googlevideo.com') || lower.includes('youtube.com');
+                    if (Platform.OS === 'android') {
+                      const headers = {
+                        'User-Agent': (looksLikeDash && isYouTubeCdn)
+                          ? 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip'
+                          : 'Nuvio/1.0 (Android)',
+                      };
+                      if (looksLikeDash) {
+                        return { uri: trailerUrl, type: 'mpd', headers } as any;
+                      }
+                      return { uri: trailerUrl, headers } as any;
+                    }
+                    return { uri: trailerUrl } as any;
+                  })()}
                   style={styles.player}
                   controls={true}
                   paused={!isPlaying}
