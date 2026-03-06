@@ -162,7 +162,8 @@ const TrailerModal: React.FC<TrailerModalProps> = memo(({
     if (retryCount < 2) {
       logger.info('TrailerModal', `Re-extracting trailer (attempt ${retryCount + 1}/2)`);
       setRetryCount(prev => prev + 1);
-      // Re-run full extraction — don't reload the same bad URL
+      // Invalidate cache so loadTrailer gets a fresh URL, not the same bad one
+      if (trailer?.key) TrailerService.invalidateCache(trailer.key);
       loadTrailer();
       return;
     }
@@ -170,7 +171,7 @@ const TrailerModal: React.FC<TrailerModalProps> = memo(({
     logger.error('TrailerModal', 'Video error after retries:', error);
     setError('Unable to play trailer. Please try again.');
     setLoading(false);
-  }, [retryCount, loadTrailer]);
+  }, [retryCount, loadTrailer, trailer?.key]);
 
   const handleTrailerEnd = useCallback(() => {
     setIsPlaying(false);
