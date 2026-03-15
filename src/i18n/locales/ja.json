@@ -462,6 +462,21 @@
         "cancel": "キャンセル",
         "remove": "削除"
     },
+    "parentalGuide": {
+        "labels": {
+            "nudity": "ヌード",
+            "violence": "暴力",
+            "profanity": "不適切な言語",
+            "alcohol": "アルコール・薬物",
+            "frightening": "怖い場面"
+        },
+        "severity": {
+            "severe": "強い",
+            "moderate": "中程度",
+            "mild": "軽い",
+            "none": "なし"
+        }
+    },
     "addons": {
         "title": "アドオン",
         "reorder_mode": "並び替えモード",
@@ -654,6 +669,7 @@
         "romanian": "ルーマニア語",
         "albanian": "アルバニア語",
         "catalan": "カタルーニャ語",
+        "vietnamese": "ベトナム語",
         "japanese": "日本語",
         "account": "アカウント",
         "content_discovery": "コンテンツとディスカバー",
@@ -661,6 +677,7 @@
         "integrations": "連携",
         "playback": "再生",
         "backup_restore": "バックアップと復元",
+        "backup_restore_desc": "バックアップと復元を作成する",
         "updates": "アップデート",
         "about": "アプリについて",
         "developer": "開発者",
